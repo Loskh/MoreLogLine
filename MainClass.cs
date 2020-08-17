@@ -36,14 +36,14 @@ namespace MoreLogLine
         private static uint Progress;
         private static ulong ProgressOffset = (ulong)0x1CAB98C;
         private static ulong ProgressPtr;
+        private static uint Step;
+        private static ulong StepOffset = ProgressOffset - 4;
+        private static ulong StepPtr;
         private static uint Quality;
         private static ulong QualityOffset = ProgressOffset + 8;
         private static ulong QualityPtr;
-        private static uint Step;
-        private static ulong StepOffset = ProgressOffset + 0x10;
-        private static ulong StepPtr;
         //private uint HQRate;
-        //private ulong HQRateOffset = (ulong)0x1CAB994;
+        //private ulong HQRateOffset = ProgressOffset + 0x10+4;
         private static uint Durability;
         private static ulong DurabilityOffset = ProgressOffset + 0x14;
         private static ulong DurabilityPtr;
@@ -63,7 +63,10 @@ namespace MoreLogLine
         private static uint CurrentCP;
         private Nhaama.Memory.Pointer CurrentCPPtr;
 
-        private List<LogLineEventDelegate> OnLogLineReadList;
+        private readonly static string MessageType = "E0";
+        private  static bool isCrafting=false;
+        private static LogLineEventDelegate BoradCastLogLine;
+        //private List<LogLineEventDelegate> OnLogLineReadList;
         public void InitPlugin(TabPage pluginScreenSpace, Label pluginStatusText) {
             pluginScreenSpace.Text = "MoreLogLine";
             InitializeComponent(pluginScreenSpace);
@@ -76,6 +79,7 @@ namespace MoreLogLine
                 InitPtr();
                 ActGlobals.oFormActMain.OnLogLineRead += new LogLineEventDelegate(this.MoreLogLines_OnLogLineRead);
                 GetOnLogReadList();
+                isCrafting = false;
                 //ActGlobals.oFormActMain.BeforeLogLineRead += new LogLineEventDelegate(this.oFormActMain_BeforeLogLineRead);
 
             });
@@ -101,8 +105,8 @@ namespace MoreLogLine
         }
 
         public void CleanStatus() {
-            Step = Progress = Quality = Durability = 0;
-            Condition = 1;
+            Progress = Quality = Durability = 0;
+            Step =Condition = 1;
         }
         public void ReadStatus() {
             Step = FFXIVProcess.ReadUInt32(StepPtr);
@@ -196,23 +200,19 @@ namespace MoreLogLine
             Delegate[] invokeList = GetObjectEventList(oFormActMain, "OnLogLineRead");
             DateTime dateTime = DateTime.Now;
             string timestamp = "[" + dateTime.ToString("HH:mm:ss.fff") + "] ";
-            //LogLineEventArgs logLineEventArgs3 = new LogLineEventArgs($"{timestamp}FF:34:5611:11:TEST123", 0, oFormActMain.LastEstimatedTime, oFormActMain.ActiveZone.ZoneName, false);
+            AddParserMessage($"OnLogLineRead:");
             using (IEnumerator<LogLineEventDelegate> enumerator = invokeList.Cast<LogLineEventDelegate>().GetEnumerator()) {
                 while (enumerator.MoveNext()) {
                     LogLineEventDelegate logLineEventDelegate = enumerator.Current;
                     try {
-                        //logLineEventDelegate2.Invoke(isImport, logLineEventArgs3);
                         MethodInfo info = logLineEventDelegate.Method;
                         string str = info.Name;
                         if (str != "MoreLogLines_OnLogLineRead") {
-                            AddParserMessage($"{str}");
-                            OnLogLineReadList.Add(logLineEventDelegate);
+                            BoradCastLogLine += logLineEventDelegate;
+                            //OnLogLineReadList.Add(logLineEventDelegate);
                         }
                         //logLineEventDelegate2(isImport, logLineEventArgs3);
-                        AddParserMessage($"OnLogLineRead:");
                         AddParserMessage($"{str}");
-                        
-                        //logLineEventDelegate2.
                     }
                     catch {
                         throw new Exception("Failed");
@@ -220,9 +220,42 @@ namespace MoreLogLine
                 }
             }
         }
-        private void MoreLogLines_OnLogLineRead(bool isImport, LogLineEventArgs logInfo) {
-            //ActGlobals.oFormActMain.ActiveZone.ActiveEncounter.LogLines.Add(new LogLineEntry(logInfo.detectedTime, "LOGLINELOGLINE", 0, ActGlobals.oFormActMain.GlobalTimeSorter));
 
+        private void SendLogLine(bool isImport,LogLineEventArgs logline) {
+            AddParserMessage($"{logline.logLine}");
+            AddParserMessage($"Step:{Step}:Progress:{Progress}:Quality:{Quality}:Durability:{Durability}:Condition:{Condition}:CurrentCP:{CurrentCP}:MaxCP:{MaxCP}:Control:{Control}:Craftsmanship{Craftsmanship}");
+
+            BoradCastLogLine(isImport, logline);
+
+        }
+        private void MoreLogLines_OnLogLineRead(bool isImport, LogLineEventArgs logInfo) {
+            DateTime dateTime = ParseLogDateTime(logInfo.logLine);
+            string logline = logInfo.logLine;
+            Regex StartCraft = new Regex("^.{14} 00:0842:([^:]+?)从背包里取出了材料。");
+            Regex EndCraft = new Regex("^.{14} 00:0842:([^:]+?)中止了制作作业。");
+            Regex CraftSkill = new Regex("^.{14} 00:08(42|2b):([^:]+?)发动([^:]+?)");
+            Regex CraftSucess = new Regex("^.{14} 00:08c2:([^:]+?)制作([^:]+?)成功");
+
+
+            //LogLineEventArgs logLine = new LogLineEventArgs("111111111111", 0, ActGlobals.oFormActMain.LastEstimatedTime, ActGlobals.oFormActMain.ActiveZone.ZoneName, false);
+            //BoradCastLogLine(isImport, logLine);
+
+            //SendLogLine(isImport, logLine);
+
+            if (StartCraft.IsMatch(logline)) {
+                isCrafting = true;
+                OnLogLine_CraftStart(isImport, dateTime);
+            }
+            else if (isCrafting == true) {
+                if (CraftSkill.IsMatch(logline)) {
+                    OnLogLine_CraftSkill(isImport, dateTime);
+
+                }
+                else if (EndCraft.IsMatch(logline) || CraftSucess.IsMatch(logline)) {
+                    OnLogLine_CraftEnd(isImport, dateTime);
+                    isCrafting = false;
+                }
+            }
         }
 
         private DateTime ParseLogDateTime(string message) {
@@ -230,70 +263,41 @@ namespace MoreLogLine
             if (message == null || message.Length < 5) {
                 return result;
             }
-            if (message[2] == '|' && message.IndexOf('|', 3) > 0) {
-                if (!DateTime.TryParse(message.Substring(3, message.IndexOf('|', 3) - 3), out result)) {
-                    return DateTime.MinValue;
+            //AddParserMessage(message.Substring(1, 12));
+            if (!DateTime.TryParse(message.Substring(1, 12), out result)) {
+                    return result.AddMilliseconds(100);
                 }
-            }
-            else if (message[3] == '|' && message.IndexOf('|', 4) > 0) {
-                return DateTime.MinValue;
-            }
             return result;
         }
 
         private string GenLogLine(DateTime time) {
-            //return $"{ Step.ToString("X")}:{Progress.ToString("X")}:{Quality.ToString("X")}:{HQRate.ToString("X")}:{Durability.ToString("X")}:{Condition.ToString("X")}:{Craftsmanship.ToString("X")}:{Control.ToString("X")}:{CurrentCP.ToString("X")}:{MaxCP.ToString("X")}";
-            return $"{Step:X}:{Progress:X}:{Quality:X}:{Durability:X}:{Condition:X}:{CurrentCP:X}:{MaxCP:X}:{Control:X}:{Craftsmanship:X}";
-        }
-        private void oFormActMain_BeforeLogLineRead(bool isImport, LogLineEventArgs logInfo) {
-            DateTime dateTime = ParseLogDateTime(logInfo.logLine);
-            string logline = logInfo.logLine;
-            Regex StartCraft = new Regex("^.{14} 00:0842:([^:]+?)从背包里取出了材料。");
-            Regex EndCraft = new Regex("^.{14} 00:0842:([^:]+?)中止了制作作业。");
-            Regex CraftSkill = new Regex("^.{14} 00:08(42|2b):([^:]+?)发动([^:]+?)⇒([^:]+?)");
-            Regex CraftSucess = new Regex("^.{14} 00:08c2:([^:]+?)制作([^:]+?)成功");
-
-
-            if (StartCraft.IsMatch(logline)) {
-                CleanStatus();
-                logInfo.logLine = logline + ":" + GenLogLine(dateTime);
-                AddParserMessage(logInfo.logLine);
-
-            }
-            else if (CraftSkill.IsMatch(logline)) {
-                ReadStatus();
-                logInfo.logLine = logline + ":" + GenLogLine(dateTime);
-                AddParserMessage(logInfo.logLine);
-            }
-            else if (EndCraft.IsMatch(logline)) {
-                ReadStatus();
-                logInfo.logLine = logline + ":" + GenLogLine(dateTime);
-                CleanStatus();
-                AddParserMessage(logInfo.logLine);
-            }
-            else if (CraftSucess.IsMatch(logline)) {
-                ReadStatus();
-                logInfo.logLine = logline + ":" + GenLogLine(dateTime);
-                CleanStatus();
-                AddParserMessage(logInfo.logLine);
-            }
-
-
+            string timestamp = "[" + time.ToString("HH:mm:ss.fff") + "] ";
+            return $"{timestamp}{MessageType}:{Step:X}:{Progress:X}:{Quality:X}:{Durability:X}:{Condition:X}:{CurrentCP:X}:{MaxCP:X}:{Control:X}:{Craftsmanship:X}";
         }
 
-        private void OnLogLine_CraftStart() {
+        private void OnLogLine_CraftStart(bool isImport,DateTime time) {
+            ReadStatus();
             CleanStatus();
-            throw new NotImplementedException();
+            string logline=GenLogLine(time);
+            LogLineEventArgs logLine = new LogLineEventArgs(logline, 0, ActGlobals.oFormActMain.LastEstimatedTime, ActGlobals.oFormActMain.ActiveZone.ZoneName, false);
+            SendLogLine(isImport, logLine);
         }
-        private void OnLogLine_CraftSkill() {
-            throw new NotImplementedException();
+        private void OnLogLine_CraftSkill(bool isImport,DateTime time) {
+            Thread.Sleep(200);
+            ReadStatus();
+            string logline = GenLogLine(time);
+            LogLineEventArgs logLine = new LogLineEventArgs(logline, 0, ActGlobals.oFormActMain.LastEstimatedTime, ActGlobals.oFormActMain.ActiveZone.ZoneName, false);
+            SendLogLine(isImport, logLine);
         }
-        private void OnLogLine_CraftEnd() {
-            throw new NotImplementedException();
+        private void OnLogLine_CraftEnd(bool isImport,DateTime time) {
+            ReadStatus();
+            string logline = GenLogLine(time);
+            LogLineEventArgs logLine = new LogLineEventArgs(logline, 0, ActGlobals.oFormActMain.LastEstimatedTime, ActGlobals.oFormActMain.ActiveZone.ZoneName, false);
+            SendLogLine(isImport, logLine);
+            CleanStatus();
         }
 
         public void DeInitPlugin() {
-            //ActGlobals.oFormActMain.BeforeLogLineRead -= new LogLineEventDelegate(this.oFormActMain_BeforeLogLineRead);
             ActGlobals.oFormActMain.OnLogLineRead -= new LogLineEventDelegate(this.MoreLogLines_OnLogLineRead);
             throw new NotImplementedException();
         }
