@@ -63,7 +63,7 @@ namespace MoreLogLine
         private static uint CurrentCP;
         private Nhaama.Memory.Pointer CurrentCPPtr;
 
-        private readonly static string MessageType = "E0";
+        private readonly static string MessageType = "FFEX:EX_Craft";
         private  static bool isCrafting=false;
         private static LogLineEventDelegate BoradCastLogLine;
         //private List<LogLineEventDelegate> OnLogLineReadList;
